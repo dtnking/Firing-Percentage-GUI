@@ -1,6 +1,5 @@
 package sample;
 
-import gnu.io.*;
 import javafx.application.Application;
 import javafx.beans.value.ChangeListener;
 import javafx.beans.value.ObservableValue;
@@ -9,26 +8,25 @@ import javafx.collections.ListChangeListener;
 import javafx.collections.ObservableList;
 import javafx.concurrent.Task;
 import javafx.geometry.Pos;
+import javafx.scene.Scene;
 import javafx.scene.chart.CategoryAxis;
 import javafx.scene.chart.LineChart;
 import javafx.scene.chart.NumberAxis;
 import javafx.scene.chart.XYChart;
-import javafx.scene.control.ComboBox;
-import javafx.scene.Scene;
 import javafx.scene.control.Button;
+import javafx.scene.control.ComboBox;
 import javafx.scene.control.Slider;
+import javafx.scene.control.TextField;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
-import javafx.scene.control.TextField;
+import purejavacomm.*;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.text.NumberFormat;
 import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Enumeration;
-import java.util.Random;
-import java.util.TooManyListenersException;
+import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -38,13 +36,15 @@ import java.util.concurrent.Executors;
 
 public class Main extends Application {
     Stage window;
+    int data;
+    byte[] buffer = new byte[1024];
+    Serial sr=new Serial();
     ComboBox<String> comboBox;
     TextField text;
     Slider slider = new Slider(1,100,1);
     SerialPort serialPort;
-    InputStream inputStream;
     OutputStream outputStream;
-    String st;
+    InputStream inputStream;
 
     ObservableList<XYChart.Data<String, Integer>> xyList1 = FXCollections.observableArrayList();
     ObservableList<String> myXaxisCategories = FXCollections.observableArrayList();
@@ -100,7 +100,7 @@ public class Main extends Application {
                 String strDate = dateFormat.format(newDate);
                 myXaxisCategories.add(strDate);
 
-                xyList1.add(new XYChart.Data(strDate, Integer.valueOf(newDate.getMinutes() + random.nextInt(100500))));
+                xyList1.add(new XYChart.Data(strDate,data));
             }
         });
         ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -111,7 +111,7 @@ public class Main extends Application {
         xySeries1 = new XYChart.Series(xyList1);
         lineChart.getData().add(xySeries1);
         //
-        java.util.Enumeration<CommPortIdentifier> portEnum = CommPortIdentifier.getPortIdentifiers();
+        Enumeration<CommPortIdentifier> portEnum = CommPortIdentifier.getPortIdentifiers();
         int i = 0;
         String[] r = new String[5];
         while (portEnum.hasMoreElements() && i < 5) {
@@ -119,9 +119,19 @@ public class Main extends Application {
             r[i] = portIdentifier.getName();//+  " - " +  getPortTypeName(portIdentifier.getPortType()) ;
             i++;
         }
-        comboBox = new ComboBox<>(FXCollections.observableArrayList(r));
-//        comboBox.setPromptText("Select Port to Connect");
 
+        comboBox = new ComboBox<>(FXCollections.observableArrayList(r));
+        comboBox.valueProperty().addListener(e->{
+            Object selectedItem = comboBox.getValue();
+            String com = selectedItem.toString();
+            Serial sr=new Serial();
+            try {
+                sr.ser(com);
+            } catch (TooManyListenersException e1) {
+                e1.printStackTrace();
+            }
+        });
+//        comboBox.setPromptText("Select Port to Connect");
         //Button to send out data
         Button sendButton = new Button("Send");
 //        sendButton.setOnAction(e->sendData());
@@ -143,9 +153,15 @@ public class Main extends Application {
         slider.valueProperty().addListener(new ChangeListener<Number>() {
             @Override
             public void changed(ObservableValue<? extends Number> observableValue, Number number, Number t1) {
-                sendData();
+                try {
+                    outputStream = serialPort.getOutputStream();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+                new SerialWriter(outputStream);
             }
         });
+
         //Layout
         VBox layout = new VBox(10);
         layout.setAlignment(Pos.CENTER);
@@ -155,28 +171,40 @@ public class Main extends Application {
         window.setScene(scene);
         window.show();
     }
+    void connect( String portName ) throws Exception {
+        CommPortIdentifier portIdentifier = CommPortIdentifier.getPortIdentifier(portName);
+        if ( portIdentifier.isCurrentlyOwned() ) {
+            System.out.println("Error: Port is currently in use");
+        }
+        else {
+            CommPort commPort = portIdentifier.open(this.getClass().getName(),2000);
 
-    public static void main(String[] args) {
+            if ( commPort instanceof SerialPort ) {
+                SerialPort serialPort = (SerialPort) commPort;
+                serialPort.setSerialPortParams(57600,SerialPort.DATABITS_8,SerialPort.STOPBITS_1,SerialPort.PARITY_NONE);
+
+                InputStream in = serialPort.getInputStream();
+                OutputStream out = serialPort.getOutputStream();
+                serialPort.addEventListener(new SerialReader(in));
+                serialPort.notifyOnDataAvailable(true);
+            }
+            else {
+                System.out.println("Error: Only serial ports are handled by this example.");
+            }
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
         launch(args);
     }
 
-    private void sendData(){
-        String x = text.getText();
-        String F = "F" + x;
-        Object selectedItem = comboBox.getValue();
-        String com = selectedItem.toString();
-        Serial sr=new Serial();
-        System.out.println(sr.ser(F.getBytes(),com));
-
-        sr.close();
-    }
-    public class Serial {
+    public class Serial{
         Enumeration portList;
         CommPortIdentifier portId;
         String messageString = "0";
-        OutputStream outputStream;
 
-        private String ser(byte[] bytes, String com){
+
+        private String ser(String com) throws TooManyListenersException {
             portList=CommPortIdentifier.getPortIdentifiers();
             while(portList.hasMoreElements()){
                 portId = (CommPortIdentifier) portList.nextElement();
@@ -188,34 +216,64 @@ public class Main extends Application {
                             return "Port In Use";
                         }
                         try{
+                            inputStream = serialPort.getInputStream();
                             outputStream = serialPort.getOutputStream();
                         }catch(IOException e){
                             return "Error!!!!!!!";
                         }
                         try{
-                            serialPort.setSerialPortParams(115200,
+                            serialPort.setSerialPortParams(9600,
                                     SerialPort.DATABITS_8,
                                     SerialPort.STOPBITS_1,
                                     SerialPort.PARITY_NONE);
                         }catch(UnsupportedCommOperationException e){}
-                        try{
-                            int a = (int)slider.getValue();
-                            char f = 'f';
-                            byte[] byteArray = new byte[2];
-                            byteArray[0] = (byte)f;
-                            byteArray[1] = (byte)a;
-                            outputStream.write(byteArray);
-                        }catch(IOException e){
-                            return "Failed to Send Data";
-                        }
+                        serialPort.addEventListener(new SerialReader(inputStream));
+                        serialPort.notifyOnDataAvailable(true);
                     }
             }
-            return "Data sent";
+            return "Configured successfully";
         }
         private void close(){
             serialPort.close();
         }
+
     }
+    public class SerialReader implements SerialPortEventListener {
+        private InputStream in;
+
+
+        public SerialReader ( InputStream in ) {
+            this.in = in;
+        }
+        public void serialEvent(SerialPortEvent arg0) {
+            try {
+                data = inputStream.read();
+                System.out.println("this is the :"+data);
+            } catch ( IOException e ) {
+                e.printStackTrace();
+                System.exit(-1);
+            }
+        }
+    }
+
+    /** */
+    public class SerialWriter {
+        public SerialWriter ( OutputStream out ) {
+            outputStream = out;
+            try{
+                int a = (int)slider.getValue();
+                char f = 'f';
+                byte[] byteArray = new byte[2];
+                byteArray[0] = (byte)f;
+                byteArray[1] = (byte)a;
+                outputStream.write(byteArray);
+            }catch( IOException e ) {
+                e.printStackTrace();
+                System.exit(-1);
+            }
+        }
+    }
+
 }
 
 
